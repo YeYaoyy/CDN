@@ -1,0 +1,140 @@
+#! /usr/bin/env python3
+import sys
+import http.server
+import threading
+import zlib
+import os
+import requests
+import csv
+
+
+port = 0
+global origin
+list = []
+# global cursor
+d = {}
+r = {}
+global currentCache
+
+
+#implemented BaseHTTPPRequestHandler class used as parameter in HTTPServer
+class Request(http.server.BaseHTTPRequestHandler):
+    #implement GET method
+    def do_GET(self):
+        newThread = threading.Thread(target=self.httpThread())
+        newThread.start()
+    
+    #open a new thread to handle get request
+    def httpThread(self):
+        #parse url
+        path = self.path
+        if path == "/grading/beacon":
+            self.send_response(204)
+            self.send_header("Content-type","text/html")
+            self.end_headers()
+        else:
+            path = requests.utils.unquote(path)
+            path = path.replace(" ", "_")
+            print(path)
+            filePath = d.get(path)
+
+            #if not exists, request new file from origin server
+            response = ""
+            if filePath == None:
+                print(origin)
+                originRequest = "http://" + origin + ":8080" + path
+                print("----------------------------request origin:", originRequest)
+                message = requests.get(originRequest)
+                #print(message.text)
+                response = message.text
+                self.send_response(200)
+                self.send_header("Content-type","text/html")
+                self.end_headers()
+                try:
+                    self.wfile.write(response.encode())
+                    #self.wfile.write(zlib.compress(response.encode()))
+                except BrokenPipeError as e:
+                    print(e)
+                compressedMessage = zlib.compress(response.encode())
+                global currentCache
+                mem = currentCache + sys.getsizeof(d) + sys.getsizeof(list)
+                print("mem:", mem)
+                if mem < 17000000:
+                    d[path] = response.encode()
+                    list.insert(0, path)
+                    f = open("file" + path, "wb")
+                    f.write(compressedMessage)
+                    f.close()
+                    print("download", path)
+                    currentCache = currentCache + os.path.getsize("file" + path)
+                else:
+                    d.pop(list[-1])
+                    d[path] = response.encode()
+                    list.insert(0, path)
+                    currentCache = currentCache - os.path.getsize("file" + list[-1])
+                    os.remove("file" + list[-1])
+                    print("remove", list[-1])
+                    list.pop(-1)
+                    f = open("file" + path, "wb")
+                    f.write(compressedMessage)
+                    f.close()
+                    print("download", path)
+                    currentCache = currentCache + os.path.getsize("file" + path)
+            else:
+                print("---------------------------from db")
+                response = filePath
+                self.send_response(200)
+                self.send_header("Content-type","text/html")
+                self.end_headers()
+                try:
+                    self.wfile.write(response)
+                except BrokenPipeError as e:
+                    print(e)
+                j = 0
+                while j < len(list):
+                    if list[j] == path:
+                        break
+                    else:
+                        j = j + 1
+                key = list[j]
+                list.pop(j)
+                list.insert(0, key)
+
+
+#192.168.48.128
+
+if __name__ == "__main__":
+    #getLocalhostIp()
+    #main()
+    i = 0
+    currentCache = 0
+    while i < len(sys.argv):
+        if sys.argv[i] == "-p" :
+            port = int(sys.argv[i + 1])
+            origin = sys.argv[i + 3]
+            break
+        i = i + 1
+    print(port, origin)
+
+    print("------------------------------deploying----------------------------")
+    print("------------------------------please waiting-----------------------")
+    filename = open("pageviews.csv", "r")
+    file = csv.DictReader(filename)
+
+    # i = 0
+    for col in file:
+        articleName = "/" + col["article"].replace(" ", "_")
+        if os.path.exists("file" + articleName) == True:
+            currentCache = currentCache + os.path.getsize("file" + articleName)
+            #print("currentCache:", currentCache)
+            f = open('file' + articleName, 'rb')
+            depobj = zlib.decompressobj()
+            # d[articleName] = zlib.decompress(f.read())
+            d[articleName] = depobj.decompress(f.read())
+            list.append(articleName)
+            f.close()
+
+    server = http.server.HTTPServer(("", port), Request)
+    print("starting server", port)
+    server.serve_forever()
+    #TODO: server.serve_close()

@@ -1,0 +1,45 @@
+#! /usr/bin/env python3
+from pathlib import Path
+import sqlite3
+import csv
+import socket
+import requests
+import zipfile
+from io import BytesIO
+import glob
+
+response = requests.get('https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City-CSV&license_key'
+                        '=bm6VE0IX5qz6OJRz&suffix=zip')
+zipfile = zipfile.ZipFile(BytesIO(response.content))
+zipfile.extractall()
+
+Path('geoip_data.db').touch()
+connection = sqlite3.connect('geoip_data.db')
+
+c = connection.cursor()
+
+c.execute('''DROP TABLE IF EXISTS geoip''')
+c.execute('''CREATE TABLE geoip (network_low numeric, network_high numeric, latitude numeric, longitude numeric)''')
+c.execute("CREATE INDEX index_low ON geoip(network_low)")
+c.execute("CREATE INDEX index_high ON geoip(network_high)")
+
+filepath = ''
+for py in glob.glob("./GeoLite2*/*IPv4.csv"):
+    filepath = py
+
+# https://stackoverflow.com/questions/9120422/how-to-skip-over-columns-in-sqlite-using-python
+with open(filepath, 'r') as csv_file:
+    sql = 'INSERT INTO geoip VALUES(?, ?, ?, ?)'
+    for row in csv.reader(csv_file):
+        if row[0] == 'network':
+            continue
+        subnet = row[0].split('/')[0]
+        maskCount = int(row[0].split('/')[1])
+        network_low = (int.from_bytes((socket.inet_aton(subnet)), "big") + 1)
+        network_high = (int.from_bytes((socket.inet_aton(subnet)), "big") + 2**(32-maskCount) - 2)
+        c.execute(sql, ([network_low, network_high, row[7], row[8]]))
+
+connection.commit()
+connection.close()
+
+

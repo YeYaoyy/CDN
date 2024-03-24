@@ -1,0 +1,98 @@
+#! /usr/bin/env python3
+import sqlite3
+from dnslib import *
+import sys
+import socket
+from _thread import *
+from math import sin, cos, sqrt, radians, asin
+
+replicas = {'139.144.30.25': (33.844, -84.4784), '173.255.210.124': (37.5625, -122.0004),
+            '139.144.69.56': (50.1188, 8.6843),
+            '185.3.95.25': (51.5164, -0.093), '139.162.83.107': (35.6893, 139.6899),
+            '192.46.211.228': (19.0748, 72.8856), '170.187.240.5': (-33.8715, 151.2006)}
+cache = {}
+
+
+def main():
+    if len(sys.argv) != 5 or sys.argv[-1] != 'cs5700cdn.example.com':
+        print('Wrong command line arguments!')
+        sys.exit(1)
+
+    port = int(sys.argv[2])
+    # DNS runs on UDP
+    my_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # direct all received packets to local
+    my_socket.bind(("", port))
+    while True:
+        data, addr = my_socket.recvfrom(10240)
+        print('received from address: ', addr)
+        if not data:
+            break
+        start_new_thread(threaded, (my_socket, data, addr))
+    my_socket.close()
+
+
+# https://www.geeksforgeeks.org/socket-programming-multi-threading-python/
+def threaded(connection, data, address):
+    response = pack_DNS(data, address[0])
+    if response:
+        connection.sendto(response, address)
+
+
+# to construct a DNS packet so server socket can send it back to client
+def pack_DNS(data, address):
+    msg = DNSRecord.parse(data)
+    print(msg, flush=True)
+    if msg.header.qr == 0:
+        response = DNSRecord(q=DNSQuestion("cs5700cdn.example.com"))
+        response.header.id = msg.header.id
+        response.header.set_qr(1)
+        response.header.set_ra(1)
+        response.header.set_rd(1)
+        response.header.set_aa(1)
+        if address in cache:
+            best_ip = cache[address]
+        else:
+            best_ip = find_best_ip(address)
+            cache[address] = best_ip
+        response.add_answer(RR(rname='cs5700cdn.example.com',ttl=120, rdata=A(best_ip)))
+        return response.pack()
+    return False
+
+
+def find_best_ip(client_ip_address):
+    ip = int.from_bytes((socket.inet_aton(client_ip_address)), "big")
+    connection = sqlite3.connect('geoip_data.db')
+    c = connection.cursor()
+    select_all = "SELECT latitude, longitude FROM geoip WHERE network_low <= ? AND network_high >= ? LIMIT 1"
+    row = c.execute(select_all, [ip, ip]).fetchall()
+    connection.close()
+
+    client_latitude = row[0][0]
+    client_longitude = row[0][1]
+
+    # find the nearest replica ip
+    best_ip = ''
+    min_distance = 63710000
+    for rep in replicas:
+        d = calculate_distance(client_latitude, client_longitude, replicas[rep][0], replicas[rep][1])
+        if d < min_distance:
+            best_ip = rep
+            min_distance = d
+    return best_ip
+
+
+# https://stackoverflow.com/questions/4913349/haversine-formula-in-python-bearing-and-distance-between-two-gps-points
+def calculate_distance(client_latitude, client_longitude, replica_latitude, replica_longitude):
+    lon1, lat1, lon2, lat2 = map(radians, [client_longitude, client_latitude, replica_longitude, replica_latitude])
+    # haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    c = 2 * asin(sqrt(a))
+    return 6371 * c
+
+
+if __name__ == "__main__":
+    main()
+

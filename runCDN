@@ -1,0 +1,54 @@
+#!/bin/bash
+
+DNSHOST=proj4-dns.5700.network
+HTTPHOSTS=("proj4-repl1.5700.network"
+           "proj4-repl2.5700.network"
+           "proj4-repl3.5700.network"
+           "proj4-repl4.5700.network"
+           "proj4-repl5.5700.network"
+           "proj4-repl6.5700.network"
+           "proj4-repl7.5700.network")
+DIR=
+
+PORT=""
+ORIGIN=""
+NAME=""
+USERNAME=""
+KEYFILE=""
+
+while [ $# -gt 0 ]
+do
+    case $1 in
+        --port | -p)
+            shift; PORT=$1;;
+        --origin | -o)
+            shift; ORIGIN=$1;;
+        --name | -n)
+            shift; NAME=$1;;
+        --username | -u)
+            shift; USERNAME=$1;;
+        --identity | -i)
+            shift; KEYFILE=$1;;
+        *)
+            usage;;
+    esac
+    shift
+done
+
+
+
+ssh -o StrictHostKeyChecking=no -i $KEYFILE $USERNAME@$DNSHOST \
+    "cd ~/$DIR; screen -d -m ./dnsserver -p $PORT -n $NAME &"
+echo ''
+
+
+for host in ${HTTPHOSTS[@]};
+do
+    ssh -o StrictHostKeyChecking=no -i $KEYFILE $USERNAME@$host \
+        "cd ~/$DIR; screen -d -m ./httpserver -p $PORT -o $ORIGIN &"
+    echo ''
+done
+
+sleep 3m
+
+exit 0
